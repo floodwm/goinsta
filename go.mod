@@ -5,6 +5,7 @@ go 1.18
 require (
 	github.com/chromedp/cdproto v0.0.0-20220901095120-1a01299a2163
 	github.com/chromedp/chromedp v0.8.5
+	github.com/sardanioss/httpcloak v1.6.1
 )
 
 require (

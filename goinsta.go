@@ -1,6 +1,7 @@
 package goinsta
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/floodwm/goinsta/utilities"
+	httpcloakclient "github.com/sardanioss/httpcloak/client"
 )
 
 // Instagram represent the main API handler
@@ -114,6 +116,9 @@ type Instagram struct {
 	TwoFactorInfo *TwoFactorInfo
 
 	c *http.Client
+
+	// httpcloak client for TLS fingerprint cloaking
+	cloakClient *httpcloakclient.Client
 
 	// Set to true to debug reponses
 	Debug bool
@@ -298,6 +303,11 @@ func (insta *Instagram) SetProxy(url string, insecure bool, forceHTTP2 bool) err
 	insta.proxy = url
 	insta.proxyInsecure = insecure
 
+	if insta.cloakClient != nil {
+		insta.cloakClient.SetProxy(url)
+		return nil
+	}
+
 	uri, err := neturl.Parse(url)
 	if err == nil {
 		insta.c.Transport = &http.Transport{
@@ -313,7 +323,94 @@ func (insta *Instagram) SetProxy(url string, insecure bool, forceHTTP2 bool) err
 
 // UnsetProxy unsets proxy for connection.
 func (insta *Instagram) UnsetProxy() {
+	if insta.cloakClient != nil {
+		insta.cloakClient.SetProxy("")
+		return
+	}
 	insta.c.Transport = nil
+}
+
+// cloakTransport wraps httpcloak's client as an http.RoundTripper
+// so it can be used with the standard http.Client.
+type cloakTransport struct {
+	client *httpcloakclient.Client
+}
+
+func (t *cloakTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx := req.Context()
+
+	cloakReq := &httpcloakclient.Request{
+		Method:  req.Method,
+		URL:     req.URL.String(),
+		Headers: make(map[string][]string),
+		Body:    req.Body,
+	}
+	for k, v := range req.Header {
+		cloakReq.Headers[k] = v
+	}
+
+	resp, err := t.client.Do(ctx, cloakReq)
+	if err != nil {
+		return nil, err
+	}
+
+	httpHeaders := make(http.Header)
+	for k, v := range resp.Headers {
+		httpHeaders[http.CanonicalHeaderKey(k)] = v
+	}
+	// httpcloak already decompresses response body;
+	// remove Content-Encoding to prevent double decompression by goinsta
+	delete(httpHeaders, "Content-Encoding")
+
+	// Read body bytes for http.Response
+	bodyBytes, err := io.ReadAll(resp.Body)
+	resp.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	return &http.Response{
+		StatusCode: resp.StatusCode,
+		Header:     httpHeaders,
+		Body:       io.NopCloser(bytes.NewReader(bodyBytes)),
+		Request:    req,
+	}, nil
+}
+
+// EnableCloak enables TLS fingerprint cloaking using httpcloak.
+// This makes the TLS/HTTP2 fingerprint indistinguishable from a real browser,
+// bypassing TLS fingerprint detection by Instagram.
+// Preset should be a browser preset like "chrome-latest-android" or "chrome-latest".
+func (insta *Instagram) EnableCloak(preset string) {
+	if insta.cloakClient != nil {
+		insta.cloakClient.Close()
+	}
+
+	opts := []httpcloakclient.Option{
+		httpcloakclient.WithoutRedirects(),
+		httpcloakclient.WithTLSOnly(),
+	}
+
+	if insta.proxy != "" {
+		opts = append(opts, httpcloakclient.WithProxy(insta.proxy))
+	}
+	if insta.proxyInsecure {
+		opts = append(opts, httpcloakclient.WithInsecureSkipVerify())
+	}
+
+	insta.cloakClient = httpcloakclient.NewClient(preset, opts...)
+	insta.c.Transport = &cloakTransport{client: insta.cloakClient}
+}
+
+// DisableCloak disables TLS fingerprint cloaking and restores the standard HTTP transport.
+func (insta *Instagram) DisableCloak() {
+	if insta.cloakClient != nil {
+		insta.cloakClient.Close()
+		insta.cloakClient = nil
+	}
+	insta.c.Transport = &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+	}
 }
 
 // Save exports config to ~/.goinsta
