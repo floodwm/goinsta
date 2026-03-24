@@ -18,7 +18,7 @@ const (
 	connType           = "WIFI"
 	instaSigKeyVersion = "4"
 	locale             = "en_US"
-	appVersion         = "250.0.0.21.109"
+	appVersion         = "423.0.0.0.48"
 	appVersionCode     = "394071253"
 
 	// Used for supported_capabilities value used in some requests, e.g. tray requests
